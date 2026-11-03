@@ -71,7 +71,7 @@ destroy data this plugin cannot restore.
 
 | Layer | What happens |
 |---|---|
-| Host plugin (`src/index.js`) | Registers a root-scoped Typert Remote service `ctx.archiveManager` with two endpoints: `archiveManager/unarchive` (removes a session id from `ctx.workspaceRegistry`'s `archivedSessionIds` through the registry's own serialized op queue — `enqueueOperation`/`requireState`/`setState` — and returns the updated set) and `archiveManager/openSessionFolder` (locates the session's transcript via `ctx.sessionPersistence` and reveals its directory in the platform file manager). |
+| Host plugin (`src/index.js`) | Registers a root-scoped Typert Remote service `ctx.archiveManager` with two endpoints: `archiveManager/unarchive` (calls the public `ctx.workspaceRegistry.unarchiveSession()` and returns the registry's current archive set) and `archiveManager/openSessionFolder` (finds the persistence snapshot by `snapshot.header.id`, passes that header to a supported backend locator, and reveals the transcript directory). |
 | Browser plugin (`src/client.js`) | Mounts the matching strict remote descriptors via `ctx.remote.$mount`, then registers a `sidebar.footer.action` entry (button + panel). The panel reads `workspaces.list` (items + archivedSessionIds) and `sessions.list` (both reactive stores), groups archived ids by workspace accounting, calls `archiveManager/unarchive` for restore, `sessions.open(id)` to open, and `archiveManager/openSessionFolder` for the folder button. |
 
 No DSH source is patched. The plugin is discovered by the standard loader
@@ -80,8 +80,19 @@ loader (`dsh.client.platform = "web"`).
 
 ## Compatibility
 
-- DeepSeek Harness `0.1.x` — verified end-to-end via `npx --yes @deepseek-ai/dsh plugin add` on
-  `0.1.1-rc.2` (web profile); peer ranges cover `^0.1.0-rc.6 || ^0.1.1-rc.1`
+This compatibility revision is `0.4.1-compat.2`. It targets exactly DSH
+`0.2.1-rc.5`. Upgrade DSH to that version before applying this plugin; other
+releases are outside its declared peer range.
+The client injects the session and workspace UI bundles and API gateway that
+provide its context services. Remote codecs expose schema factories with strict
+parsers. The existing dark-panel background fix is preserved.
+
+The original upstream `0.4.0` targets older DSH `0.1.x`. Installing the upstream
+Git URL below retrieves that original revision, rather than this local snapshot.
+Use the prepared package or the reviewed commit on this compatibility branch.
+
+- The fixed RC5 SDK has been checked with isolated restore-persistence,
+  transcript-location and strict remote-codec integration tests.
 - Windows (scripts + Explorer reveal) — the plugin itself is platform-agnostic
   (Finder / xdg-open on macOS / Linux)
 
@@ -212,9 +223,7 @@ import { apply } from './src/index.js';
 const ctx = new Context();
 let archived = ['a', 'b'];
 ctx.provide('workspaceRegistry', {
-  enqueueOperation(op) { return Promise.resolve().then(op); },
-  requireState() { return { archivedSessionIds: archived }; },
-  async setState(s) { archived = s.archivedSessionIds; },
+  async unarchiveSession(id) { archived = archived.filter(value => value !== id); },
   get archivedSessionIds() { return archived; },
 });
 const svc = apply(ctx);
@@ -229,6 +238,10 @@ console.log(await svc.unarchive({ sessionId: 'b' })); // { archivedSessionIds: [
   (reconnect / list refresh).
 - `openSessionFolder` reveals the *transcript* directory (under
   `~/.dsh/sessions/...`), not the project workspace directory.
+- Folder reveal requires a persistence backend with a compatible locator.
+  `locate()` is not part of the public persistence interface; unsupported
+  backends receive a controlled error. Tests must intercept the file-manager
+  launch rather than opening the user's desktop.
 - Removing a session's transcript file by hand is out of scope and will not
   be "restored" (the endpoint leaves the set unchanged for unknown ids).
 

@@ -66,6 +66,9 @@ export class ArchiveManagerService extends TypertRemoteService {
 		// overrides from its (injected) context to cover receiver-context gaps.
 		this._registry = this.safeGet(ctx, "workspaceRegistry");
 		this._persistence = this.safeGet(ctx, "sessionPersistence");
+		// Keep the OS handoff replaceable in isolated tests; production uses the
+		// platform default without exposing a new plugin option or configuration.
+		this._revealInFileManager = revealInFileManager;
 		for (const init of markerInitializers) init.call(this);
 	}
 
@@ -86,17 +89,10 @@ export class ArchiveManagerService extends TypertRemoteService {
 	async unarchive(request) {
 		const sessionId = String(request && request.sessionId ? request.sessionId : "");
 		const registry = this._registry;
-		if (!registry || typeof registry.enqueueOperation !== "function") {
+		if (!registry || typeof registry.unarchiveSession !== "function") {
 			throw new Error("workspace registry unavailable");
 		}
-		await registry.enqueueOperation(async () => {
-			const state = registry.requireState();
-			if (!state.archivedSessionIds.includes(sessionId)) return;
-			await registry.setState({
-				...state,
-				archivedSessionIds: state.archivedSessionIds.filter((id) => id !== sessionId)
-			});
-		});
+		await registry.unarchiveSession(sessionId);
 		return { archivedSessionIds: [...registry.archivedSessionIds] };
 	}
 
@@ -108,18 +104,24 @@ export class ArchiveManagerService extends TypertRemoteService {
 	async openSessionFolder(request) {
 		const sessionId = String(request && request.sessionId ? request.sessionId : "");
 		const persistence = this._persistence;
-		if (!persistence || typeof persistence.list !== "function" || typeof persistence.locate !== "function") {
+		if (!persistence || typeof persistence.list !== "function") {
 			throw new Error("session persistence unavailable");
 		}
-		const headers = await persistence.list();
-		const header = headers.find((h) => h && h.id === sessionId);
-		if (!header) throw new Error("session not found: " + sessionId);
-		const location = persistence.locate(header);
+		const snapshots = await persistence.list();
+		const snapshot = snapshots.find((item) => item && item.header && item.header.id === sessionId);
+		if (!snapshot) throw new Error("session not found: " + sessionId);
+		// `locate(header)` is currently a backend-specific runtime capability (the
+		// public persistence contract intentionally does not promise file paths).
+		// Fail clearly for backends that cannot reveal a physical transcript.
+		if (typeof persistence.locate !== "function") {
+			throw new Error("session locator unavailable");
+		}
+		const location = await persistence.locate(snapshot.header);
 		if (!location || typeof location.path !== "string" || location.path.length === 0) {
 			throw new Error("cannot locate session log: " + sessionId);
 		}
 		const dir = dirname(location.path);
-		revealInFileManager(dir);
+		this._revealInFileManager(dir);
 		return { path: dir };
 	}
 }

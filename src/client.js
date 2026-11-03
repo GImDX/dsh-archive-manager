@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 
 		const React = require("react");
-		const { useSyncExternalStore, useState, useMemo, useCallback, useRef } = React;
+		const { useSyncExternalStore, useState, useMemo, useCallback, useEffect, useRef } = React;
 
 		// ---------------------------------------------------------------- locale
 		const isZh = typeof navigator !== "undefined" && navigator.language && navigator.language.toLowerCase().startsWith("zh");
@@ -143,9 +143,37 @@ window.__ModuleLoader__.load({
 		};
 
 		// ------------------------------------------------------------- descriptor
-		// Strict codecs (plain parse objects) matching the host endpoints;
-		// required by the client $mount path.
-		const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
+		// Typert strict codecs are factories. Keeping the schema dependency-free
+		// avoids asking the browser module loader for a package it does not seed.
+		const nonemptyString = (value, field) => {
+			if (typeof value !== "string" || value.length === 0) throw new TypeError(field + " must be a non-empty string");
+			return value;
+		};
+		const record = (value, label, fields) => {
+			if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(label + " must be an object");
+			const allowed = new Set(fields);
+			for (const key of Reflect.ownKeys(value)) {
+				if (typeof key !== "string" || !allowed.has(key)) throw new TypeError(label + " has an unexpected field");
+			}
+			if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+				throw new TypeError(label + " must be a plain object");
+			}
+			return value;
+		};
+		const strictCodec = (typeSymbol, parse) => ({
+			mode: "strict",
+			typeSymbol,
+			create: () => ({ parse })
+		});
+		const parseSessionRequest = (value) => ({ sessionId: nonemptyString(record(value, "request", ["sessionId"]).sessionId, "sessionId") });
+		const parseUnarchiveResult = (value) => {
+			const result = record(value, "result", ["archivedSessionIds"]);
+			if (!Array.isArray(result.archivedSessionIds) || result.archivedSessionIds.some((id) => typeof id !== "string")) {
+				throw new TypeError("archivedSessionIds must be an array of strings");
+			}
+			return { archivedSessionIds: [...result.archivedSessionIds] };
+		};
+		const parseOpenFolderResult = (value) => ({ path: nonemptyString(record(value, "result", ["path"]).path, "path") });
 		const TYPERT_REMOTE = {
 			package: "dsh-archive-manager",
 			descriptors: [
@@ -160,29 +188,10 @@ window.__ModuleLoader__.load({
 							name: "request",
 							wire: "request",
 							source: "json",
-							codec: {
-								mode: "strict",
-								typeSymbol: "dsh-archive-manager/types#UnarchiveRequest",
-								schema: {
-									parse: (v) => {
-										if (!v || typeof v !== "object") throw new Error("request must be an object");
-										return { sessionId: str(v.sessionId) };
-									}
-								}
-							}
+							codec: strictCodec("dsh-archive-manager/types#UnarchiveRequest", parseSessionRequest)
 						}
 					],
-					result: {
-						mode: "strict",
-						typeSymbol: "dsh-archive-manager/types#UnarchiveResult",
-						schema: {
-							parse: (v) => {
-								if (!v || typeof v !== "object") throw new Error("result must be an object");
-								const arr = Array.isArray(v.archivedSessionIds) ? v.archivedSessionIds.map(str) : [];
-								return { archivedSessionIds: arr };
-							}
-						}
-					}
+					result: strictCodec("dsh-archive-manager/types#UnarchiveResult", parseUnarchiveResult)
 				},
 				{
 					id: "dsh-archive-manager#archiveManager/openSessionFolder",
@@ -195,28 +204,10 @@ window.__ModuleLoader__.load({
 							name: "request",
 							wire: "request",
 							source: "json",
-							codec: {
-								mode: "strict",
-								typeSymbol: "dsh-archive-manager/types#OpenSessionFolderRequest",
-								schema: {
-									parse: (v) => {
-										if (!v || typeof v !== "object") throw new Error("request must be an object");
-										return { sessionId: str(v.sessionId) };
-									}
-								}
-							}
+							codec: strictCodec("dsh-archive-manager/types#OpenSessionFolderRequest", parseSessionRequest)
 						}
 					],
-					result: {
-						mode: "strict",
-						typeSymbol: "dsh-archive-manager/types#OpenSessionFolderResult",
-						schema: {
-							parse: (v) => {
-								if (!v || typeof v !== "object") throw new Error("result must be an object");
-								return { path: str(v.path) };
-							}
-						}
-					}
+					result: strictCodec("dsh-archive-manager/types#OpenSessionFolderResult", parseOpenFolderResult)
 				}
 			]
 		};
@@ -350,6 +341,21 @@ window.__ModuleLoader__.load({
 			const [dims, setDims] = useState(null); // {left, top, width, height} once moved/resized
 			const dragRef = useRef(null);           // {mode, startX, startY, base}
 			const panelRef = useRef(null);
+
+			// Clicking anywhere outside the panel closes it, mirroring the
+			// native dsh settings surface. Capture phase: an in-panel handler
+			// can never swallow the check, and the trigger button is unmounted
+			// while the panel is open, so no toggle race exists.
+			useEffect(() => {
+				if (!open) return;
+				const onPointerDown = (e) => {
+					const el = panelRef.current;
+					if (el && e.target instanceof Node && !el.contains(e.target)) setOpen(false);
+				};
+				document.addEventListener("pointerdown", onPointerDown, true);
+				return () => document.removeEventListener("pointerdown", onPointerDown, true);
+			}, [open]);
+
 			const MIN_W = 280, MIN_H = 220;
 			const startDrag = useCallback((e, mode) => {
 				if (mode === "move" && e.target && e.target.closest && e.target.closest("button")) return;

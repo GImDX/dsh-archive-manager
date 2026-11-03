@@ -43,7 +43,7 @@
 
 | 层 | 做什么 |
 |---|---|
-| 宿主插件（`src/index.js`） | 注册根级 Typert Remote 服务 `ctx.archiveManager`，两个端点：`archiveManager/unarchive`（通过 `ctx.workspaceRegistry` 自己的串行操作队列 `enqueueOperation`/`requireState`/`setState` 把会话 id 从 `archivedSessionIds` 移除并返回新集合）与 `archiveManager/openSessionFolder`（通过 `ctx.sessionPersistence` 定位会话转录文件，并在系统文件管理器中打开其目录）。 |
+| 宿主插件（`src/index.js`） | 注册根级 Typert Remote 服务 `ctx.archiveManager`，两个端点：`archiveManager/unarchive`（调用公开的 `ctx.workspaceRegistry.unarchiveSession()` 并返回当前归档集合）与 `archiveManager/openSessionFolder`（按 `snapshot.header.id` 查找会话，将 header 传给支持定位的后端，并在系统文件管理器中打开转录目录）。 |
 | 浏览器插件（`src/client.js`） | 用 `ctx.remote.$mount` 挂载匹配的严格描述符，然后在 `sidebar.footer.action` 插槽注册按钮 + 面板。面板读取 `workspaces.list`（items + archivedSessionIds）与 `sessions.list`（都是响应式 store），按工作区记账把归档 id 分组，恢复调 `archiveManager/unarchive`，打开调 `sessions.open(id)`，文件夹按钮调 `archiveManager/openSessionFolder`。 |
 
 不修改任何 DSH 源码。插件由标准加载器（profile 的 `cordis.patch.yml`）发现，
@@ -51,7 +51,15 @@
 
 ## 兼容性
 
-- DeepSeek Harness `0.1.x`——已在 `0.1.1-rc.2` 上端到端验证官方 `npx --yes @deepseek-ai/dsh plugin add` 安装（web profile）；peer 范围覆盖 `^0.1.0-rc.6 || ^0.1.1-rc.1`
+本兼容修订版本为 `0.4.1-compat.2`，仅支持指定的 DSH `0.2.1-rc.5`。
+先将 DSH 更新到该版本，再应用此插件；其他版本不在声明的支持范围内。
+客户端依赖提供会话、工作区和远程 API 服务的实际 bundle，
+Remote codec 通过 schema 工厂提供严格解析器。现有的深色面板背景修复继续保留。
+
+原上游 `0.4.0` 面向较早的 DSH `0.1.x`。下文原上游 Git 地址安装的是原版；
+本次兼容修复应使用已准备的包，或本兼容分支中已审阅的提交。
+
+- 已使用固定 RC5 SDK 完成隔离的归档恢复持久化、转录目录定位及严格远程 codec 集成验证。
 - 附 Windows 安装/卸载脚本（资源管理器打开目录）；插件本身跨平台（macOS Finder / Linux xdg-open）
 
 ## 安装
@@ -170,9 +178,7 @@ import { apply } from './src/index.js';
 const ctx = new Context();
 let archived = ['a', 'b'];
 ctx.provide('workspaceRegistry', {
-  enqueueOperation(op) { return Promise.resolve().then(op); },
-  requireState() { return { archivedSessionIds: archived }; },
-  async setState(s) { archived = s.archivedSessionIds; },
+  async unarchiveSession(id) { archived = archived.filter(value => value !== id); },
   get archivedSessionIds() { return archived; },
 });
 const svc = apply(ctx);
@@ -184,6 +190,8 @@ console.log(await svc.unarchive({ sessionId: 'b' })); // { archivedSessionIds: [
 - **刻意不做“删除”**：见上文《为什么没有“删除”功能》。
 - 面板在恢复后做乐观更新；权威的 `archivedSessionIds` 会在下一次 workspace 基线（重连/列表刷新）时重新同步。
 - `openSessionFolder` 打开的是**转录目录**（`~/.dsh/sessions/...` 下），不是项目工作区目录。
+- 打开目录要求持久化后端提供兼容的定位能力。`locate()` 不属于通用公开接口，
+  不支持此能力的后端会返回受控错误；测试会拦截文件管理器启动，不打开真实桌面。
 - 手动删除会话日志文件不在本插件职责内；对未知 id，端点会原样返回集合（幂等）。
 
 ## 许可证
